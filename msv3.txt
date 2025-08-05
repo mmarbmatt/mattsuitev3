@@ -1,0 +1,530 @@
+//@version=5
+indicator("MattSuite V3", overlay=true)
+
+// User inputs
+show_fvg = input.bool(true, title="Display FVG")
+fvg_extension = input.int(30, title="FVG Extension Length", minval=1)
+displaytimelines = input.bool(true, title="Display timelines")
+ema_length = input.int(100, title="EMA Length")
+bb_length = input.int(20, title="BB Length")
+bb_stddev = input.float(2.0, title="BB Standard Deviation")
+bullish_color = input.color(color.green, title="Bullish Order Block Color")
+bearish_color = input.color(color.red, title="Bearish Order Block Color")
+lookback_period = input.int(50, title="Lookback Period for High/Low Breaks", minval=1)
+line_length = input.int(30, title="Line Length", minval=1)
+display_lines = input.bool(true, title="Display Lines")
+varPerc = input.float(1.0, title="VaR Percentage")
+
+// Color Theme Selection
+color_theme = input.string("Default", title="Color Theme", options=["Default", "Purple/Teal", "Ocean Blue", "Forest Green", "Sunset Orange", "Monochrome"])
+
+// Define theme colors based on selection
+theme_primary = switch color_theme
+    "Purple/Teal" => color.purple
+    "Ocean Blue" => color.blue
+    "Forest Green" => color.green
+    "Sunset Orange" => color.orange
+    "Monochrome" => color.white
+    => color.white // Default
+
+theme_secondary = switch color_theme
+    "Purple/Teal" => color.teal
+    "Ocean Blue" => color.navy
+    "Forest Green" => color.lime
+    "Sunset Orange" => color.yellow
+    "Monochrome" => color.silver
+    => color.yellow // Default
+
+theme_accent1 = switch color_theme
+    "Purple/Teal" => color.fuchsia
+    "Ocean Blue" => color.aqua
+    "Forest Green" => color.olive
+    "Sunset Orange" => color.red
+    "Monochrome" => color.gray
+    => color.orange // Default
+
+theme_accent2 = switch color_theme
+    "Purple/Teal" => color.aqua
+    "Ocean Blue" => color.teal
+    "Forest Green" => color.yellow
+    "Sunset Orange" => color.fuchsia
+    "Monochrome" => color.black
+    => color.red // Default
+
+theme_accent3 = switch color_theme
+    "Purple/Teal" => color.maroon
+    "Ocean Blue" => color.lime
+    "Forest Green" => color.orange
+    "Sunset Orange" => color.purple
+    "Monochrome" => color.white
+    => color.green // Default
+
+theme_accent4 = switch color_theme
+    "Purple/Teal" => color.navy
+    "Ocean Blue" => color.yellow
+    "Forest Green" => color.red
+    "Sunset Orange" => color.maroon
+    "Monochrome" => color.gray
+    => color.blue // Default
+
+// Function to calculate the strength of the FVG
+fvg_strength(close1, close2, high1, high0, low1, low0) =>
+    diff = math.abs(close1 - close2)
+    range1 = high1 - low1
+    range0 = high0 - low0
+    strength = diff / ((range1 + range0) / 2)
+    strength
+
+// Function to identify Break of Structure
+break_of_structure(highs, lows) =>
+    bos_up = false
+    bos_down = false
+    if (high[0] > array.max(highs) and high[0] > high[1])
+        bos_up := true
+    if (low[0] < array.min(lows) and low[0] < low[1])
+        bos_down := true
+    [bos_up, bos_down]
+
+// Function to identify Change of Character (CHoCH)
+change_of_character(highs, lows, current_high, current_low, atr, threshold) =>
+    choch_up = false
+    choch_down = false
+    if array.size(lows) > 1 and current_high > array.get(lows, 1) and (current_high - array.get(lows, 1)) > atr * threshold
+        choch_up := true
+    if array.size(highs) > 1 and current_low < array.get(highs, 1) and (array.get(highs, 1) - current_low) > atr * threshold
+        choch_down := true
+    [choch_up, choch_down]
+
+// Initialize variables and arrays
+var lines_body_top = array.new_line(0)
+var lines_wick_top = array.new_line(0)
+var lines_body_bottom = array.new_line(0)
+var lines_wick_bottom = array.new_line(0)
+var fills = array.new_linefill(0)
+var float[] swing_highs = array.new_float()
+var float[] swing_lows = array.new_float()
+var bool label_bos_up = false
+var bool label_bos_down = false
+var float[] swing_highss = array.new_float()
+var float[] swing_lowss = array.new_float()
+var bool label_choch_up = false
+var bool label_choch_down = false
+atr_period = 14
+atr = ta.atr(atr_period)
+threshold = 1.5
+var label[] bullish_labels = array.new_label()
+var label[] bearish_labels = array.new_label()
+var line[] bullish_lines = array.new_line()
+var line[] bearish_lines = array.new_line()
+var int last_bullish_ob_index = na
+var int last_bearish_ob_index = na
+
+// Ensure we have enough bars to check for the pattern
+if (bar_index >= 3) 
+    // Identify the pattern in a sequence of 3 candles
+    if (high[2] <= high[1] and low[2] >= low[1] and high[0] <= high[1] and low[0] >= low[1])
+        fvg_strength_value = fvg_strength(close[1], close[2], high[1], high[0], low[1], low[0])
+        strong_threshold = 0.5
+        weak_threshold = 0.2
+        var label_text = ""
+        var label_color = color.white
+        if (close[1] > close[2])
+            if fvg_strength_value > strong_threshold
+                label_text := "Strong FVG Bullish"
+                label_color := color.green
+            else
+                label_text := "FVG Bullish"
+                label_color := color.yellow
+        else if (close[1] < close[2])
+            if fvg_strength_value > strong_threshold
+                label_text := "Strong FVG Bearish"
+                label_color := color.red
+            else
+                label_text := "FVG Bearish"
+                label_color := color.purple
+        if show_fvg and label_text != "" and fvg_strength_value >= weak_threshold
+            label_y = close[1] > close[2] ? high[1] : low[1]
+            line_body_start_y = close[1] > close[2] ? math.max(close[1], close[2]) : math.min(close[1], close[2])
+            line_wick_start_y = close[1] > close[2] ? high[1] : low[1]
+            middle_y = (line_body_start_y + line_wick_start_y) / 2
+            line_body = line.new(x1=bar_index[1], y1=line_body_start_y, x2=bar_index[1] + fvg_extension, y2=line_body_start_y, color=label_color, width=2, style=line.style_dotted)
+            line_wick = line.new(x1=bar_index[1], y1=line_wick_start_y, x2=bar_index[1] + fvg_extension, y2=line_wick_start_y, color=label_color, width=2, style=line.style_dotted)
+            middle_line = line.new(x1=bar_index[1], y1=middle_y, x2=bar_index[1] + fvg_extension, y2=middle_y, color=theme_primary, width=1, style=line.style_dotted)
+            if (close[1] > close[2])  
+                array.push(lines_body_top, line_body)
+                array.push(lines_wick_top, line_wick)
+            else
+                array.push(lines_body_bottom, line_body)
+                array.push(lines_wick_bottom, line_wick)
+            fill = linefill.new(line_body, line_wick, color.new(label_color, 80))
+            array.push(fills, fill)
+    array.unshift(swing_highs, high[1])
+    array.unshift(swing_lows, low[1])
+    if array.size(swing_highs) > 10
+        array.pop(swing_highs)
+    if array.size(swing_lows) > 10
+        array.pop(swing_lows)
+    [bos_up, bos_down] = break_of_structure(swing_highs, swing_lows)
+    if bos_up and not label_bos_up
+        line.new(x1=bar_index[0], y1=high[0], x2=bar_index[0] + 10, y2=high[0], color=theme_primary, width=2)
+        label_bos_up := true
+        label_bos_down := false
+    if bos_down and not label_bos_down
+        line.new(x1=bar_index[0], y1=low[0], x2=bar_index[0] + 10, y2=low[0], color=theme_primary, width=2)
+        label_bos_down := true
+        label_bos_up := false
+    array.unshift(swing_highss, high[1])
+    array.unshift(swing_lowss, low[1])
+    if array.size(swing_highss) > 10
+        array.pop(swing_highss)
+    if array.size(swing_lowss) > 10
+        array.pop(swing_lowss)
+    if array.size(swing_highss) > 1 and array.size(swing_lowss) > 1
+        [choch_up, choch_down] = change_of_character(swing_highss, swing_lowss, high[0], low[0], atr, threshold)
+        if choch_up and not label_choch_up
+            line.new(x1=bar_index[0], y1=high[0], x2=bar_index[0] + 20, y2=high[0], color=theme_secondary, width=1, style=line.style_dotted)
+            label_choch_up := true
+            label_choch_down := false
+        if choch_down and not label_choch_down
+            line.new(x1=bar_index[0], y1=low[0], x2=bar_index[0] + 20, y2=low[0], color=theme_secondary, width=1, style=line.style_dotted)
+            label_choch_down := true
+            label_choch_up := false
+ema_100 = ta.ema(close, ema_length)
+bb_basis = ta.sma(close, bb_length)
+bb_upper = bb_basis + ta.stdev(close, bb_length) * bb_stddev
+bb_lower = bb_basis - ta.stdev(close, bb_length) * bb_stddev
+cloud_color = bb_basis > ema_100 ? color.new(theme_accent3, 70) : color.new(theme_accent4, 70)
+hline1 = plot(ema_100, title="100 EMA", color=theme_primary, linewidth=2)
+hline2 = plot(bb_basis, title="BB Basis", color=theme_secondary, linewidth=2)
+fill(plot(ema_100, title='100 EMA', color=theme_primary, linewidth=0), plot(bb_basis, title='BB Basis', color=theme_secondary, linewidth=0), color=cloud_color, transp=90)
+f_manage_labels_and_lines(label_array, line_array, start_index, y, color) =>
+    if array.size(label_array) >= 3
+        old_label = array.shift(label_array)
+        label.delete(old_label)
+        old_line = array.shift(line_array)
+        line.delete(old_line)
+    if display_lines
+        new_line = line.new(start_index, y, start_index + line_length, y, color=color, width=2)
+        array.push(line_array, new_line)
+
+// Logic for Bullish Order Block
+if (na(last_bullish_ob_index) or bar_index > last_bullish_ob_index + line_length)
+    if (close > ta.highest(close[1], lookback_period) and close[1] < close)
+        // Removed the label.new for Bullish OB
+        f_manage_labels_and_lines(bullish_labels, bullish_lines, bar_index[1], high[1], bullish_color)
+        last_bullish_ob_index := bar_index
+
+// Logic for Bearish Order Block
+if (na(last_bearish_ob_index) or bar_index > last_bearish_ob_index + line_length)
+    if (close < ta.lowest(close[1], lookback_period) and close[1] > close)
+        // Removed the label.new for Bearish OB
+        f_manage_labels_and_lines(bearish_labels, bearish_lines, bar_index[1], high[1], bearish_color)
+        last_bearish_ob_index := bar_index
+
+[dailyHigh, dailyLow, dailyClose] = request.security(syminfo.tickerid, "D", [high, low, close])
+[weeklyHigh, weeklyLow, weeklyClose] = request.security(syminfo.tickerid, "W", [high, low, close])
+[monthlyHigh, monthlyLow, monthlyClose] = request.security(syminfo.tickerid, "M", [high, low, close])
+maxGain = dailyHigh - dailyClose
+maxLoss = dailyLow - dailyClose
+maxGainWeekly = weeklyHigh - weeklyClose
+maxLossWeekly = weeklyLow - weeklyClose
+maxGainMonthly = monthlyHigh - monthlyClose
+maxLossMonthly = monthlyLow - monthlyClose
+var hh_daily = float(na)
+var ll_daily = float(na)
+var hh_weekly = float(na)
+var ll_weekly = float(na)
+var hh_monthly = float(na)
+var ll_monthly = float(na)
+if time("D") != time("D")[1]
+    hh_daily := high
+    ll_daily := low
+hh_daily := math.max(high, hh_daily)
+ll_daily := math.min(low, ll_daily)
+if time("W") != time("W")[1]
+    hh_weekly := high
+    ll_weekly := low
+hh_weekly := math.max(high, hh_weekly)
+ll_weekly := math.min(low, ll_weekly)
+if time("M") != time("M")[1]
+    hh_monthly := high
+    ll_monthly := low
+hh_monthly := math.max(high, hh_monthly)
+ll_monthly := math.min(low, ll_monthly)
+plot(hh_daily, color=theme_accent4, linewidth=1, style=plot.style_stepline, title="Daily High")
+plot(ll_daily, color=theme_accent3, linewidth=1, style=plot.style_stepline, title="Daily Low")
+// Removed weekly and monthly plots to reduce plot count
+// plot(hh_weekly, color=theme_secondary, linewidth=1, style=plot.style_stepline, title="Weekly High")
+// plot(ll_weekly, color=theme_secondary, linewidth=1, style=plot.style_stepline, title="Weekly Low")
+// plot(hh_monthly, color=theme_accent1, linewidth=1, style=plot.style_stepline, title="Monthly High")
+// plot(ll_monthly, color=theme_accent1, linewidth=1, style=plot.style_stepline, title="Monthly Low")
+
+// Bollinger Bands calculation
+bb_mult = 2.0
+basis = ta.sma(close, bb_length)
+dev = bb_mult * ta.stdev(close, bb_length)
+upper = basis + dev
+lower = basis - dev
+
+// Candle color adjustment based on distance from Bollinger Band basis
+transparency = math.floor(100 * math.abs(close - basis) / (upper - lower))
+color_candle = color.new(theme_primary, transparency)
+// Removed first plotcandle to reduce plot count
+// plotcandle(open, high, low, close, color=color_candle, wickcolor=color.new(theme_primary, 50))
+
+// Determine the character to plot based on transparency
+char_value = math.round((transparency / 100) * 9) + 1
+
+// Keep the numbers but remove the plotchar calls - only draw horizontal line if the character value is 1
+if char_value == 1
+    line.new(x1=bar_index, y1=close, x2=bar_index + 25, y2=close, color=theme_accent1, width=1, style=line.style_solid)
+
+var float highValue = na
+var float lowValue = na
+
+if ta.highest(high, 100) == high
+    highValue := high
+else
+    highValue := na
+
+if ta.lowest(low, 100) == low
+    lowValue := low
+else
+    lowValue := na
+
+// Removed individual plotchar calls to reduce plot count
+// plotchar(highValue, "High", "H", location.belowbar, theme_primary, size=size.tiny)
+// plotchar(lowValue, "Low", "L", location.abovebar, theme_primary, size=size.tiny)
+
+// Main candle plot with high/low highlighting
+plotcandle(open, high, low, close, color=(not na(highValue) ? theme_accent3 : not na(lowValue) ? theme_accent4 : color_candle), wickcolor=color.new(theme_primary, 50))
+
+// Volume Delta calculation
+res = "1"
+[nV, sV, bV, tV] = request.security_lower_tf(syminfo.tickerid, res, [close == open ? volume : 0, close < open ? volume : 0, close > open ? volume : 0, volume])
+delta = array.sum(bV) - array.sum(sV)
+
+// Determine the character to plot based on volume delta
+delta_char_value = math.round((delta / array.max(bV)) * 9) + 1
+// Keep the numbers but remove the plotchar calls
+
+// User input for volume threshold
+volumeMultiplier = input.float(3.0, title="Volume Multiplier")
+lookbackPeriod = input.int(20, title="Lookback Period")
+maxLevels = input.int(5, title="Max Levels", minval=1)  // User input for max levels
+
+// Calculate average volume
+avgVolume = ta.sma(volume, lookbackPeriod)
+
+// Identify high volume candles
+highVolume = volume > (avgVolume * volumeMultiplier)
+
+// Arrays to store liquidation levels, their corresponding bar indices, and volumes
+var float[] liquidationLevels = array.new_float()
+var int[] liquidationBars = array.new_int()
+var line[] liquidationLines = array.new_line()
+var float[] highVolumes = array.new_float()  // Array to store high volumes
+
+// Add new liquidation level if a high volume candle is identified
+if highVolume
+    if array.size(liquidationLevels) >= maxLevels
+        array.shift(liquidationLevels)
+        array.shift(liquidationBars)
+        line.delete(array.shift(liquidationLines))
+        array.shift(highVolumes)
+    array.push(liquidationLevels, open)
+    array.push(liquidationBars, bar_index)
+    array.push(liquidationLines, na)
+    array.push(highVolumes, volume)
+
+// Function to remove crossed levels and keep top volumes
+f_clean_levels(levels, bars, lines, volumes, max_size) =>
+    var float[] cleanedLevels = array.new_float()
+    var int[] cleanedBars = array.new_int()
+    var line[] cleanedLines = array.new_line()
+    var float[] sortedVolumes = array.new_float()
+
+    // Sort indices by volume
+    sortedIndices = array.sort_indices(volumes, order=order.descending)
+    
+    for i = 0 to array.size(sortedIndices) - 1
+        if array.size(cleanedLevels) >= max_size
+            break
+        idx = array.get(sortedIndices, i)
+        level = array.get(levels, idx)
+        if not (open > level and close < level or open < level and close > level)
+            array.push(cleanedLevels, level)
+            array.push(cleanedBars, array.get(bars, idx))
+            array.push(cleanedLines, array.get(lines, idx))
+    
+    [cleanedLevels, cleanedBars, cleanedLines]
+
+// Clean levels and update arrays if they are not empty
+if array.size(liquidationLevels) > 0
+    [liquidationLevels, liquidationBars, liquidationLines] = f_clean_levels(liquidationLevels, liquidationBars, liquidationLines, highVolumes, maxLevels)
+
+// Plot horizontal lines if arrays are not empty
+if array.size(liquidationLevels) > 0
+    for i = 0 to array.size(liquidationLevels) - 1
+        level = array.get(liquidationLevels, i)
+        start_bar = array.get(liquidationBars, i)
+        if na(array.get(liquidationLines, i))
+            array.set(liquidationLines, i, line.new(x1=start_bar, y1=level, x2=bar_index, y2=level, color=theme_accent2, width=1, extend=extend.right))
+        else
+            line.set_xy1(array.get(liquidationLines, i), start_bar, level)
+            line.set_xy2(array.get(liquidationLines, i), bar_index, level)
+
+
+
+// Session times in UTC
+var usa_start_hour = 13  // 9:30am EST to UTC
+var usa_start_minute = 30
+var usa_end_hour = 20    // 4:00pm EST to UTC
+var usa_end_minute = 0
+
+var china_start_hour = 5  // 1:00pm CST to UTC (China Standard Time is UTC+8)
+var china_start_minute = 0
+var china_end_hour = 9    // 5:00pm CST to UTC
+var china_end_minute = 0
+
+var asia_start_hour = 0    // 00:00 UTC (new daily)
+var asia_start_minute = 0
+var asia_end_hour = 8      // 08:00 UTC (new daily)
+var asia_end_minute = 0
+
+var euro_start_hour = 8    // 9:00am CET to UTC (Central European Time is UTC+1)
+var euro_start_minute = 0
+var euro_end_hour = 16     // 5:00pm CET to UTC
+var euro_end_minute = 0
+
+// Detecting the start of each session
+is_usa_session_start = (hour == usa_start_hour and minute == usa_start_minute)
+is_china_session_start = (hour == china_start_hour and minute == china_start_minute)
+is_asia_session_start = (hour == asia_start_hour and minute == asia_start_minute)
+is_euro_session_start = (hour == euro_start_hour and minute == euro_start_minute)
+
+// Detecting the end of each session
+is_usa_session_end = (hour == usa_end_hour and minute == usa_end_minute)
+is_china_session_end = (hour == china_end_hour and minute == china_end_minute)
+is_asia_session_end = (hour == asia_end_hour and minute == asia_end_minute)
+is_euro_session_end = (hour == euro_end_hour and minute == euro_end_minute)
+
+// Highlighting the background for session starts
+bgcolor(is_usa_session_start ? color.new(theme_secondary, 80) :
+       is_china_session_start ? color.new(theme_accent4, 80) :
+       is_asia_session_start ? color.new(theme_accent3, 80) :
+       is_euro_session_start ? color.new(theme_accent1, 80) : na, 
+       title="Session Start Highlight")
+
+// Highlighting the background for session ends
+bgcolor(is_usa_session_end ? color.new(theme_primary, 80) :
+       is_china_session_end ? color.new(theme_primary, 80) :
+       is_asia_session_end ? color.new(theme_primary, 80) :
+       is_euro_session_end ? color.new(theme_primary, 80) : na, 
+       title="Session End Highlight")
+
+// Removed session debugging plots to reduce plot count
+// plotshape(is_usa_session_start, title="USA Session Start", location=location.top, color=theme_secondary, style=shape.labelup, text="USA Start")
+// plotshape(is_china_session_start, title="China Session Start", location=location.top, color=theme_accent4, style=shape.labelup, text="China Start")
+// plotshape(is_asia_session_start, title="Asia Session Start", location=location.top, color=theme_accent3, style=shape.labelup, text="Asia Start")
+// plotshape(is_euro_session_start, title="Euro Session Start", location=location.top, color=theme_accent1, style=shape.labelup, text="Euro Start")
+
+// Removed session debugging plots for session ends
+// plotshape(is_usa_session_end, title="USA Session End", location=location.bottom, color=theme_secondary, style=shape.labeldown, text="USA End")
+// plotshape(is_china_session_end, title="China Session End", location=location.bottom, color=theme_accent4, style=shape.labeldown, text="China End")
+// plotshape(is_asia_session_end, title="Asia Session End", location=location.bottom, color=theme_accent3, style=shape.labeldown, text="Asia End")
+// plotshape(is_euro_session_end, title="Euro Session End", location=location.bottom, color=theme_accent1, style=shape.labeldown, text="Euro End")
+
+// Alerts for session starts
+alertcondition(is_usa_session_start, title="USA Session Start Alert", message="USA Session has started!")
+alertcondition(is_china_session_start, title="China Session Start Alert", message="China Session has started!")
+alertcondition(is_asia_session_start, title="Asia Session Start Alert", message="Asia Session has started!")
+alertcondition(is_euro_session_start, title="Euro Session Start Alert", message="Euro Session has started!")
+
+// Alerts for session ends
+alertcondition(is_usa_session_end, title="USA Session End Alert", message="USA Session has ended!")
+alertcondition(is_china_session_end, title="China Session End Alert", message="China Session has ended!")
+alertcondition(is_asia_session_end, title="Asia Session End Alert", message="Asia Session has ended!")
+alertcondition(is_euro_session_end, title="Euro Session End Alert", message="Euro Session has ended!")
+
+// Variable to store the reference to the last session stats label
+var label session_stats_label = na
+
+// Function to calculate price change
+calculate_price_change(start_price, current_price) =>
+    (current_price - start_price) / start_price * 100
+
+// Calculate session-specific stats (assuming the start of the session as a reference)
+var float session_start_price = na
+var float session_start_volume = na
+var float session_volume_delta = na
+
+// Reset the active_session variable for each bar
+var string active_session = ""
+
+// Determine which session is currently active
+active_session := "" // Clear the session string at the start of every bar
+
+if (hour >= usa_start_hour and hour < usa_end_hour)
+    active_session := "USA Session"
+if (hour >= china_start_hour and hour < china_end_hour)
+    active_session := active_session == "" ? "China Session" : active_session + " & China Session"
+if (hour >= asia_start_hour and hour < asia_end_hour)
+    active_session := active_session == "" ? "Asia Session" : active_session + " & Asia Session"
+if (hour >= euro_start_hour and hour < euro_end_hour)
+    active_session := active_session == "" ? "Euro Session" : active_session + " & Euro Session"
+
+// Reset session data on session start
+if is_usa_session_start or is_china_session_start or is_asia_session_start or is_euro_session_start
+    session_start_price := close
+    session_start_volume := volume
+    session_volume_delta := 0
+
+// Accumulate session volume and calculate volume delta
+if not na(session_start_volume)
+    session_volume_delta := volume - session_start_volume
+
+// Calculate the price change relative to the start of the session
+price_change = na(session_start_price) ? na : calculate_price_change(session_start_price, close)
+
+// Prepare label text with the active session name
+label_text = "Candle Volume: " + str.tostring(volume) + "\n" +
+             "Session Volume Δ: " + str.tostring(session_volume_delta) + "\n" +
+             "Session Price Change: " + (na(price_change) ? "N/A" : str.tostring(price_change, "#.##") + "%") + "\n" +
+             "Active Session: " + (active_session == "" ? "None" : active_session)
+
+// Delete the previous label if it exists
+if not na(session_stats_label)
+    label.delete(session_stats_label)
+
+// Create a new label 3 bars to the right with theme colors
+session_stats_label := label.new(bar_index + 3, high, label_text, style=label.style_label_left, color=color.new(theme_accent1, 20), textcolor=theme_primary, size=size.normal)
+
+
+//exbands
+
+length = 100
+
+std_dev = ta.stdev(close, length)
+
+// Calculate Bands
+
+upper3 = basis + 2 * std_dev
+lower3 = basis - 2 * std_dev
+
+
+upper5 = basis + 4 * std_dev
+lower5 = basis - 4 * std_dev
+
+// Plot only the most essential bands to reduce plot count
+plot(upper3, title="Upper 3", color=theme_accent2, linewidth=1)
+plot(lower3, title="Lower 3", color=theme_accent2, linewidth=1)
+
+// Removed upper5 and lower5 plots to reduce plot count
+// plot(upper5, title="Upper 5", color=theme_secondary, linewidth=1)
+// plot(lower5, title="Lower 5", color=theme_secondary, linewidth=1)
+
+//extra
+
+if delta_char_value == 9
+    line.new(x1=bar_index, y1=open, x2=bar_index + 35, y2=open, color=theme_accent2, width=1, style=line.style_solid)
